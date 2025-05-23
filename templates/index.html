@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DNA Motif Finder</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+        body {
+            background-image: url("{{ url_for('static', filename='bio-bg.jpg') }}");
+            background-size: cover;
+            background-attachment: fixed;
+            background-position: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #333;
+            padding-top: 40px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 720px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+            position: relative;
+            margin-bottom: 40px;
+        }
+        /* Large corner logos */
+        .corner-logo-left {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            height: 100px;
+            width: auto;
+        }
+        .corner-logo-right {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            height: 100px;
+            width: auto;
+        }
+        /* Centered title */
+        .header-title {
+            text-align: center;
+            margin: 80px 0 25px 0;
+        }
+        h1 {
+            font-weight: 700;
+            color: #2a3f54;
+            margin: 0;
+        }
+        label {
+            font-weight: 600;
+            margin-top: 15px;
+        }
+        textarea {
+            resize: vertical;
+        }
+        .footer {
+            margin-top: 50px;
+            text-align: center;
+            color: #777;
+            font-size: 0.9rem;
+        }
+        .footer-logos {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 10px;
+        }
+        .footer-logo {
+            height: 30px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Large logos in top corners -->
+        <img src="{{ url_for('static', filename='icarlogo.png') }}" alt="ICAR Logo" class="corner-logo-left" />
+        <img src="{{ url_for('static', filename='images-4.png') }}" alt="Agricultural Biotechnology Logo" class="corner-logo-right" />
+        
+        <!-- Centered title -->
+        <div class="header-title">
+            <h1>DNA Motif Finder</h1>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <div class="alert alert-danger" role="alert">
+              {{ messages[0] }}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <form method="post" enctype="multipart/form-data">
+            <label for="protein_fasta">Protein FASTA file</label>
+            <input type="file" class="form-control" id="protein_fasta" name="protein_fasta" accept=".fasta,.fa,.txt" required />
+            <label for="genome_fasta">Genome FASTA file</label>
+            <input type="file" class="form-control" id="genome_fasta" name="genome_fasta" accept=".fasta,.fa,.txt" required />
+            <label for="known_motifs">Known Motifs (one motif per line)</label>
+            <textarea class="form-control" id="known_motifs" name="known_motifs" rows="4" placeholder="Enter known motifs here, one per line..." required></textarea>
+            <button type="submit" class="btn btn-primary mt-4 w-100">Run Prediction</button>
+        </form>
+
+        <!-- Footer with logos -->
+        <div class="footer">
+            <div class="footer-logos">
+                <img src="{{ url_for('static', filename='images-4.png') }}" alt="Agricultural Biotechnology Logo" class="footer-logo" />
+                <img src="{{ url_for('static', filename='icarlogo.png') }}" alt="ICAR Logo" class="footer-logo" />
+            </div>
+            <p>&copy; 2025 DNA Motif Finder</p>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
