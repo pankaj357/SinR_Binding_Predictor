@@ -1,18 +1,21 @@
 import os
 import sys
 import tempfile
+import multiprocessing
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash
 from werkzeug.utils import secure_filename
 from Bio import SeqIO
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
 import seaborn as sns
 from Bio.Seq import Seq
 import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
 
-# Initialize Flask app with static folder configuration
+# Initialize Flask app
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.secret_key = 'your_secret_key_here'
 UPLOAD_FOLDER = tempfile.gettempdir()
@@ -179,6 +182,7 @@ def index():
 
         try:
             protein_record = next(SeqIO.parse(protein_path, "fasta"))
+            protein_name = protein_record.id
         except Exception:
             flash("Invalid protein FASTA file.")
             return redirect(request.url)
@@ -208,33 +212,97 @@ def index():
             flash("No binding sites detected.")
             return redirect(request.url)
 
+        # Generate CSV file
         csv_path = os.path.join(app.config['UPLOAD_FOLDER'], "results.csv")
-        plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "score_distribution.png")
-        html_report_path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
         df.to_csv(csv_path, index=False)
 
-        plt.figure(figsize=(8, 4))
-        sns.histplot(df["score"], bins=30, kde=True)
-        plt.title("Predicted Binding Affinity Score Distribution")
-        plt.xlabel("Score")
-        plt.ylabel("Frequency")
-        plt.tight_layout()
-        plt.savefig(plot_path)
+        # Generate Score Distribution Plot (styled)
+        plt.figure(figsize=(10, 6))
+        ax = sns.histplot(df["score"], bins=50, color='#1f77b4', alpha=0.8,
+                         edgecolor='black', linewidth=0.5)
+        ax.set_xlim(0, 0.6)
+        ax.set_ylim(0, 80000)
+        ax.set_xticks(np.arange(0, 0.7, 0.1))
+        ax.set_yticks(np.arange(0, 90000, 10000))
+        plt.title('Binding Score Distribution', pad=20, fontsize=14)
+        plt.xlabel('Binding Score', fontsize=12, labelpad=10)
+        plt.ylabel('Count', fontsize=12, labelpad=10)
+        ax.xaxis.grid(False)
+        ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+        score_plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "score_distribution.png")
+        plt.savefig(score_plot_path, dpi=100, bbox_inches='tight')
         plt.close()
 
+        # Generate Genome Position Plot (styled)
+        plt.figure(figsize=(15, 6))
+        ax = sns.scatterplot(data=df, x='position', y='score', 
+                            color='#1f77b4', alpha=0.6, )
+        plt.title(f'{protein_name} Binding Sites Across Genome', fontsize=14)
+        plt.xlabel('Genome Position', fontsize=12)
+        plt.ylabel('Binding Score', fontsize=12)
+        ax.xaxis.grid(True, linestyle='--', alpha=0.3)
+        ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+        position_plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "genome_position.png")
+        plt.savefig(position_plot_path, dpi=70, bbox_inches='tight')
+        plt.close()
+
+        # Generate HTML Report
+        # (rest of your script remains unchanged)
+
+        # Generate HTML Report
+        html_report_path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
         with open(html_report_path, "w") as f:
-            f.write("<html><head><title>SinR Binding Site Report</title></head><body>")
+            f.write("""
+            <html>
+            <head>
+                <title>SinR Binding Site Report</title>
+                <style>
+                    body { font-family: Arial, sans-serif; padding: 20px; background-color: #f9f9f9; }
+                    h1, h2 { color: #333; margin-bottom: 10px; }
+                    table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        font-size: 16px;
+                        margin-bottom: 30px;
+                    }
+                    th, td {
+                        border: 1px solid #ddd;
+                        padding: 12px;
+                        text-align: center;
+                    }
+                    th {
+                        background-color: #eaeaea;
+                        font-weight: bold;
+                    }
+                    img {
+                        max-width: 100%;
+                        height: auto;
+                        margin-bottom: 30px;
+                        border: 1px solid #ccc;
+                        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+                    }
+                </style>
+            </head>
+            <body>
+            """)
             f.write("<h1>Top Predicted Binding Sites</h1>")
             f.write(df.head(10).to_html(index=False, escape=False))
             f.write("<h2>Score Distribution Plot</h2>")
             f.write(f'<img src="{url_for("download_plot")}" alt="Score Plot">')
+            f.write("<h2>Genome Position Plot</h2>")
+            f.write(f'<img src="{url_for("download_position_plot")}" alt="Position Plot">')
             f.write("</body></html>")
 
+# (the rest of your code remains unchanged, including routing and main block)
+
+
         return render_template("results.html",
-                               results=df.head(10).to_dict(orient='records'),
-                               csv_path=url_for('download_csv'),
-                               plot_path=url_for('download_plot'),
-                               report_path=url_for('download_report'))
+                            data={'protein_name': protein_name},
+                            results=df.head(10).to_dict(orient='records'),
+                            csv_path=url_for('download_csv'),
+                            score_plot_path=url_for('download_plot'),
+                            position_plot_path=url_for('download_position_plot'),
+                            report_path=url_for('download_report'))
 
     return render_template("index.html")
 
@@ -248,12 +316,17 @@ def download_plot():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "score_distribution.png")
     return send_file(path, mimetype='image/png')
 
+@app.route('/download/position_plot')
+def download_position_plot():
+    path = os.path.join(app.config['UPLOAD_FOLDER'], "genome_position.png")
+    return send_file(path, mimetype='image/png')
+
 @app.route('/download/report')
 def download_report():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
     return send_file(path, mimetype='text/html')
 
 if __name__ == '__main__':
-    import multiprocessing
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     multiprocessing.set_start_method('spawn')
     app.run(debug=True, port=5050)
