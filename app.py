@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import tempfile
@@ -5,13 +6,14 @@ import multiprocessing
 from flask import Flask, render_template, request, redirect, url_for, send_file, flash
 from werkzeug.utils import secure_filename
 from Bio import SeqIO
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use('Agg')  # Use non-GUI backend
-import seaborn as sns
 from Bio.Seq import Seq
+import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import seaborn as sns
+from functools import partial
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,7 +23,9 @@ app.secret_key = 'your_secret_key_here'
 UPLOAD_FOLDER = tempfile.gettempdir()
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+# ==================== EXACT COPY FROM YOUR STANDALONE SCRIPT ====================
 class DNAShapePredictor:
+    """Predicts DNA shape features"""
     def __init__(self):
         self.shape_params = {
             'AA': {'mgw': 4.0, 'prop_tw': -14.0, 'roll': 0.6},
@@ -47,12 +51,14 @@ class DNAShapePredictor:
             features = {'minor_groove_width': [], 'propeller_twist': [], 'roll': []}
             if len(sequence) < 2:
                 return {k: [0] for k in features.keys()}
+
             for i in range(len(sequence)-1):
                 dinuc = sequence[i:i+2].upper()
                 if dinuc in self.shape_params:
                     params = self.shape_params[dinuc]
                     for key in features:
                         features[key].append(params[key.split('_')[0] if '_' in key else key])
+
             if not any(features.values()):
                 return {k: [0] for k in features.keys()}
             return features
@@ -61,9 +67,14 @@ class DNAShapePredictor:
             return {k: [0] for k in features.keys()}
 
 class SinRBindingPredictor:
+    """Predicts SinR binding sites"""
     def __init__(self):
         self.known_motifs = [
-            "GTTCTCT", "AGAAGAC", "GTTNNNNNNNNAAC", "CACGAAAT", "TGAAAT"
+            "GTTCTCT",
+            "AGAAGAC",
+            "GTTNNNNNNNNAAC",
+            "CACGAAAT",
+            "TGAAAT"
         ]
         self.shape_predictor = DNAShapePredictor()
 
@@ -104,9 +115,11 @@ class SinRBindingPredictor:
             shape_features = self.shape_predictor.predict_shape(sequence)
             if not any(shape_features.values()):
                 return 0
+
             avg_mgw = np.mean(shape_features['minor_groove_width'])
             avg_ptw = np.mean(shape_features['propeller_twist'])
             avg_roll = np.mean(shape_features['roll'])
+
             shape_score = (
                 0.4 * (avg_mgw / 5.0) +
                 0.3 * (abs(avg_ptw) / 15.0) +
@@ -120,10 +133,12 @@ class SinRBindingPredictor:
         try:
             if not sequence or len(sequence) < 6:
                 return 0
+
             at_content = (sequence.count('A') + sequence.count('T')) / len(sequence)
             palindrome_score = self._calculate_palindrome_score(sequence)
             conservation_score = self._calculate_conservation_score(sequence)
             shape_score = self.calculate_shape_score(sequence)
+
             score = (
                 0.25 * at_content +
                 0.25 * palindrome_score +
@@ -135,6 +150,7 @@ class SinRBindingPredictor:
             return 0
 
 def process_sequence_chunk(chunk):
+    """Process a single sequence chunk - identical to standalone"""
     try:
         predictor = SinRBindingPredictor()
         sequence = chunk['sequence']
@@ -147,9 +163,11 @@ def process_sequence_chunk(chunk):
             window = sequence[i:i + window_size]
             position = chunk['start'] + i
             key = (position, window)
+
             if key in seen:
                 continue
             seen.add(key)
+
             score = predictor.predict_binding_affinity(window)
             results.append({
                 'position': position,
@@ -157,144 +175,125 @@ def process_sequence_chunk(chunk):
                 'score': score,
                 'contig': chunk['contig']
             })
+
         return results
     except Exception as e:
         print(f"Error processing chunk: {e}")
+        return []
+# ==================== END OF STANDALONE SCRIPT LOGIC ====================
+
+def run_parallel_processing(chunks):
+    """Parallel processing with error handling"""
+    try:
+        with multiprocessing.Pool(processes=min(4, multiprocessing.cpu_count())) as pool:
+            results = []
+            for result in pool.imap_unordered(process_sequence_chunk, chunks):
+                results.extend(result)
+            return results
+    except Exception as e:
+        print(f"Parallel processing failed: {str(e)}")
         return []
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        protein_file = request.files.get('protein_fasta')
-        genome_file = request.files.get('genome_fasta')
-        known_motifs_text = request.form.get('known_motifs')
-
-        if not protein_file or not genome_file or not known_motifs_text:
-            flash("Please upload all required files and provide known motifs.")
+        # Validate file uploads
+        if 'protein_fasta' not in request.files or 'genome_fasta' not in request.files:
+            flash("Missing required files")
+            return redirect(request.url)
+            
+        protein_file = request.files['protein_fasta']
+        genome_file = request.files['genome_fasta']
+        
+        if protein_file.filename == '' or genome_file.filename == '':
+            flash("No selected file")
             return redirect(request.url)
 
-        protein_filename = secure_filename(protein_file.filename)
-        genome_filename = secure_filename(genome_file.filename)
-        protein_path = os.path.join(app.config['UPLOAD_FOLDER'], protein_filename)
-        genome_path = os.path.join(app.config['UPLOAD_FOLDER'], genome_filename)
+        # Save files with verification
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        protein_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(protein_file.filename))
+        genome_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(genome_file.filename))
+        
         protein_file.save(protein_path)
         genome_file.save(genome_path)
+        
+        if not os.path.exists(protein_path) or os.path.getsize(protein_path) == 0:
+            flash("Protein file failed to upload properly")
+            return redirect(request.url)
 
+        # Process protein file
         try:
             protein_record = next(SeqIO.parse(protein_path, "fasta"))
             protein_name = protein_record.id
         except Exception:
-            flash("Invalid protein FASTA file.")
+            flash("Invalid protein FASTA file")
             return redirect(request.url)
 
+        # Create chunks with identical parameters to standalone
         chunks = []
         chunk_size = 1000
         step_size = 500
-        try:
-            for record in SeqIO.parse(genome_path, "fasta"):
-                seq = str(record.seq)
-                for i in range(0, len(seq) - chunk_size + 1, step_size):
-                    chunks.append({
-                        'contig': record.id,
-                        'start': i,
-                        'sequence': seq[i:i + chunk_size]
-                    })
-        except Exception:
-            flash("Invalid genome FASTA file.")
-            return redirect(request.url)
+        
+        for record in SeqIO.parse(genome_path, "fasta"):
+            seq = str(record.seq).upper()  # Consistent uppercase conversion
+            for i in range(0, len(seq) - chunk_size + 1, step_size):
+                chunks.append({
+                    'contig': record.id,
+                    'start': i,
+                    'sequence': seq[i:i + chunk_size]
+                })
 
-        results = []
-        for chunk in chunks:
-            results.extend(process_sequence_chunk(chunk))
-
+        # Process chunks with identical logic
+        results = run_parallel_processing(chunks)
+        
+        # Process results identically to standalone
         df = pd.DataFrame(results)
-        if df.empty:
-            flash("No binding sites detected.")
-            return redirect(request.url)
+        df.drop_duplicates(subset=['position', 'sequence', 'contig'], inplace=True)
+        df = df.sort_values('score', ascending=False)
 
-        # Generate CSV file
+        # Generate output files
         csv_path = os.path.join(app.config['UPLOAD_FOLDER'], "results.csv")
         df.to_csv(csv_path, index=False)
 
-        # Generate Score Distribution Plot (styled)
+        # Visualization
         plt.figure(figsize=(10, 6))
-        ax = sns.histplot(df["score"], bins=50, color='#1f77b4', alpha=0.8,
-                         edgecolor='black', linewidth=0.5)
-        ax.set_xlim(0, 0.6)
-        ax.set_ylim(0, 80000)
-        ax.set_xticks(np.arange(0, 0.7, 0.1))
-        ax.set_yticks(np.arange(0, 90000, 10000))
-        plt.title('Binding Score Distribution', pad=20, fontsize=14)
-        plt.xlabel('Binding Score', fontsize=12, labelpad=10)
-        plt.ylabel('Count', fontsize=12, labelpad=10)
-        ax.xaxis.grid(False)
-        ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+        sns.histplot(df["score"], bins=50)
+        plt.title('Binding Score Distribution')
         score_plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "score_distribution.png")
-        plt.savefig(score_plot_path, dpi=100, bbox_inches='tight')
+        plt.savefig(score_plot_path)
         plt.close()
 
-        # Generate Genome Position Plot (styled)
         plt.figure(figsize=(15, 6))
-        ax = sns.scatterplot(data=df, x='position', y='score', 
-                            color='#1f77b4', alpha=0.6, )
-        plt.title(f'{protein_name} Binding Sites Across Genome', fontsize=14)
-        plt.xlabel('Genome Position', fontsize=12)
-        plt.ylabel('Binding Score', fontsize=12)
-        ax.xaxis.grid(True, linestyle='--', alpha=0.3)
-        ax.yaxis.grid(True, linestyle='--', alpha=0.3)
+        sns.scatterplot(data=df, x='position', y='score')
+        plt.title(f'{protein_name} Binding Sites Across Genome')
         position_plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "genome_position.png")
-        plt.savefig(position_plot_path, dpi=70, bbox_inches='tight')
+        plt.savefig(position_plot_path)
         plt.close()
 
-        # Generate HTML Report
-        # (rest of your script remains unchanged)
-
-        # Generate HTML Report
+        # Generate HTML report
         html_report_path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
         with open(html_report_path, "w") as f:
-            f.write("""
+            f.write(f"""
             <html>
             <head>
                 <title>SinR Binding Site Report</title>
                 <style>
-                    body { font-family: Arial, sans-serif; padding: 20px; background-color: #f9f9f9; }
-                    h1, h2 { color: #333; margin-bottom: 10px; }
-                    table {
-                        width: 100%;
-                        border-collapse: collapse;
-                        font-size: 16px;
-                        margin-bottom: 30px;
-                    }
-                    th, td {
-                        border: 1px solid #ddd;
-                        padding: 12px;
-                        text-align: center;
-                    }
-                    th {
-                        background-color: #eaeaea;
-                        font-weight: bold;
-                    }
-                    img {
-                        max-width: 100%;
-                        height: auto;
-                        margin-bottom: 30px;
-                        border: 1px solid #ccc;
-                        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-                    }
+                    body {{ font-family: Arial, sans-serif; padding: 20px; }}
+                    table {{ border-collapse: collapse; width: 100%; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f2f2f2; }}
                 </style>
             </head>
             <body>
+                <h1>Top Predicted Binding Sites for {protein_name}</h1>
+                {df.head(10).to_html(index=False)}
+                <h2>Score Distribution</h2>
+                <img src="{url_for('download_plot')}" width="800">
+                <h2>Genome Position Plot</h2>
+                <img src="{url_for('download_position_plot')}" width="800">
+            </body>
+            </html>
             """)
-            f.write("<h1>Top Predicted Binding Sites</h1>")
-            f.write(df.head(10).to_html(index=False, escape=False))
-            f.write("<h2>Score Distribution Plot</h2>")
-            f.write(f'<img src="{url_for("download_plot")}" alt="Score Plot">')
-            f.write("<h2>Genome Position Plot</h2>")
-            f.write(f'<img src="{url_for("download_position_plot")}" alt="Position Plot">')
-            f.write("</body></html>")
-
-# (the rest of your code remains unchanged, including routing and main block)
-
 
         return render_template("results.html",
                             data={'protein_name': protein_name},
