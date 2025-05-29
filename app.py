@@ -68,14 +68,17 @@ class DNAShapePredictor:
 
 class SinRBindingPredictor:
     """Predicts SinR binding sites"""
-    def __init__(self):
-        self.known_motifs = [
-            "GTTCTCT",
-            "AGAAGAC",
-            "GTTNNNNNNNNAAC",
-            "CACGAAAT",
-            "TGAAAT"
-        ]
+    def __init__(self, known_motifs=None):
+        if known_motifs is None:
+            self.known_motifs = [
+                "GTTCTCT",
+                "AGAAGAC",
+                "GTTNNNNNNNNAAC",
+                "CACGAAAT",
+                "TGAAAT"
+            ]
+        else:
+            self.known_motifs = known_motifs
         self.shape_predictor = DNAShapePredictor()
 
     def _calculate_palindrome_score(self, sequence):
@@ -149,10 +152,10 @@ class SinRBindingPredictor:
         except Exception:
             return 0
 
-def process_sequence_chunk(chunk):
+def process_sequence_chunk(chunk, known_motifs):
     """Process a single sequence chunk - identical to standalone"""
     try:
-        predictor = SinRBindingPredictor()
+        predictor = SinRBindingPredictor(known_motifs=known_motifs)
         sequence = chunk['sequence']
         window_size = 20
         step_size = 10
@@ -182,12 +185,12 @@ def process_sequence_chunk(chunk):
         return []
 # ==================== END OF STANDALONE SCRIPT LOGIC ====================
 
-def run_parallel_processing(chunks):
+def run_parallel_processing(chunks, known_motifs):
     """Parallel processing with error handling"""
     try:
         with multiprocessing.Pool(processes=min(4, multiprocessing.cpu_count())) as pool:
             results = []
-            for result in pool.imap_unordered(process_sequence_chunk, chunks):
+            for result in pool.imap_unordered(partial(process_sequence_chunk, known_motifs=known_motifs), chunks):
                 results.extend(result)
             return results
     except Exception as e:
@@ -198,15 +201,16 @@ def run_parallel_processing(chunks):
 def index():
     if request.method == 'POST':
         # Validate file uploads
-        if 'protein_fasta' not in request.files or 'genome_fasta' not in request.files:
-            flash("Missing required files")
+        if 'protein_fasta' not in request.files or 'genome_fasta' not in request.files or 'known_motifs' not in request.form:
+            flash("Missing required inputs")
             return redirect(request.url)
             
         protein_file = request.files['protein_fasta']
         genome_file = request.files['genome_fasta']
+        motifs_text = request.form.get('known_motifs', '').strip()
         
-        if protein_file.filename == '' or genome_file.filename == '':
-            flash("No selected file")
+        if protein_file.filename == '' or genome_file.filename == '' or not motifs_text:
+            flash("No selected files or empty motifs")
             return redirect(request.url)
 
         # Save files with verification
@@ -216,10 +220,9 @@ def index():
         
         protein_file.save(protein_path)
         genome_file.save(genome_path)
-        
-        if not os.path.exists(protein_path) or os.path.getsize(protein_path) == 0:
-            flash("Protein file failed to upload properly")
-            return redirect(request.url)
+
+        # Read motifs from textarea input, splitting by lines, stripping each motif
+        known_motifs = [line.strip() for line in motifs_text.splitlines() if line.strip()]
 
         # Process protein file
         try:
@@ -244,7 +247,7 @@ def index():
                 })
 
         # Process chunks with identical logic
-        results = run_parallel_processing(chunks)
+        results = run_parallel_processing(chunks, known_motifs)
         
         # Process results identically to standalone
         df = pd.DataFrame(results)
@@ -270,27 +273,61 @@ def index():
         plt.savefig(position_plot_path)
         plt.close()
 
-        # Generate HTML report
+        # Generate full HTML report with top 10 and plots
         html_report_path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
         with open(html_report_path, "w") as f:
             f.write(f"""
-            <html>
+            <!DOCTYPE html>
+            <html lang="en">
             <head>
-                <title>SinR Binding Site Report</title>
+                <meta charset="UTF-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>SinR Binding Site Full Report for {protein_name}</title>
+                <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
                 <style>
-                    body {{ font-family: Arial, sans-serif; padding: 20px; }}
-                    table {{ border-collapse: collapse; width: 100%; }}
-                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                    th {{ background-color: #f2f2f2; }}
+                    body {{
+                        font-family: Arial, sans-serif;
+                        padding: 20px;
+                        background-color: #f9f9f9;
+                    }}
+                    h1, h2 {{
+                        color: #2a3f54;
+                    }}
+                    table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        margin-bottom: 30px;
+                        box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                    }}
+                    th, td {{
+                        border: 1px solid #ddd;
+                        padding: 8px;
+                        text-align: left;
+                    }}
+                    th {{
+                        background-color: #2980b9;
+                        color: white;
+                    }}
+                    tbody tr:nth-child(even) {{
+                        background-color: #f2f6fc;
+                    }}
+                    .plot-img {{
+                        max-width: 100%;
+                        height: auto;
+                        margin-bottom: 40px;
+                        border-radius: 8px;
+                        box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+                    }}
                 </style>
             </head>
             <body>
-                <h1>Top Predicted Binding Sites for {protein_name}</h1>
-                {df.head(10).to_html(index=False)}
-                <h2>Score Distribution</h2>
-                <img src="{url_for('download_plot')}" width="800">
+                <h1>SinR Binding Site Full Report</h1>
+                <h2>Top 10 Predicted Binding Sites for {protein_name}</h2>
+                {df.head(10).to_html(index=False, classes='table table-striped table-bordered')}
+                <h2>Score Distribution Plot</h2>
+                <img src="score_distribution.png" alt="Score Distribution" class="plot-img" />
                 <h2>Genome Position Plot</h2>
-                <img src="{url_for('download_position_plot')}" width="800">
+                <img src="genome_position.png" alt="Genome Position Plot" class="plot-img" />
             </body>
             </html>
             """)
@@ -308,24 +345,25 @@ def index():
 @app.route('/download/csv')
 def download_csv():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "results.csv")
-    return send_file(path, as_attachment=True)
+    return send_file(path, as_attachment=True, download_name="results.csv")
 
 @app.route('/download/plot')
 def download_plot():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "score_distribution.png")
-    return send_file(path, mimetype='image/png')
+    return send_file(path, mimetype='image/png', as_attachment=True, download_name="score_distribution.png")
 
 @app.route('/download/position_plot')
 def download_position_plot():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "genome_position.png")
-    return send_file(path, mimetype='image/png')
+    return send_file(path, mimetype='image/png', as_attachment=True, download_name="genome_position.png")
 
 @app.route('/download/report')
 def download_report():
     path = os.path.join(app.config['UPLOAD_FOLDER'], "results_report.html")
-    return send_file(path, mimetype='text/html')
+    return send_file(path, mimetype='text/html', as_attachment=True, download_name="results_report.html")
 
 if __name__ == '__main__':
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     multiprocessing.set_start_method('spawn')
     app.run(debug=True, port=5050)
+

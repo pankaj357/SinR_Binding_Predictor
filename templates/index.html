@@ -54,9 +54,6 @@
             font-weight: 600;
             margin-top: 15px;
         }
-        textarea {
-            resize: vertical;
-        }
         .footer {
             margin-top: 50px;
             text-align: center;
@@ -99,8 +96,8 @@
             <input type="file" class="form-control" id="protein_fasta" name="protein_fasta" accept=".fasta,.fa,.txt" required />
             <label for="genome_fasta">Genome FASTA file</label>
             <input type="file" class="form-control" id="genome_fasta" name="genome_fasta" accept=".fasta,.fa,.txt" required />
-            <label for="known_motifs">Known Motifs (one motif per line)</label>
-            <textarea class="form-control" id="known_motifs" name="known_motifs" rows="4" placeholder="Enter known motifs here, one per line..." required></textarea>
+            <label for="known_motifs">Enter Known Motifs (one motif per line)</label>
+            <textarea class="form-control" id="known_motifs" name="known_motifs" rows="5" placeholder="Enter known motifs here, one per line..." required></textarea>
             <button type="submit" class="btn btn-primary mt-4 w-100">Run Prediction</button>
         </form>
 
@@ -115,5 +112,13 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        document.querySelector("form").addEventListener("submit", function (e) {
+            const submitButton = this.querySelector("button[type=submit]");
+            submitButton.disabled = true;
+            submitButton.innerHTML = 'Running Prediction... <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        });
+    </script>
 </body>
 </html>
