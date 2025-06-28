@@ -15,6 +15,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from functools import partial
 import warnings
+from scipy import stats
+from statsmodels.stats.multitest import multipletests
+from tqdm import tqdm
+
 warnings.filterwarnings('ignore')
 
 # Initialize Flask app
@@ -23,7 +27,7 @@ app.secret_key = 'your_secret_key_here'
 UPLOAD_FOLDER = tempfile.gettempdir()
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# ==================== EXACT COPY FROM YOUR STANDALONE SCRIPT ====================
+# ==================== UPDATED CORE LOGIC ====================
 class DNAShapePredictor:
     """Predicts DNA shape features"""
     def __init__(self):
@@ -67,7 +71,7 @@ class DNAShapePredictor:
             return {k: [0] for k in features.keys()}
 
 class SinRBindingPredictor:
-    """Predicts SinR binding sites"""
+    """Predicts SinR binding sites with p-values"""
     def __init__(self, known_motifs=None):
         if known_motifs is None:
             self.known_motifs = [
@@ -80,6 +84,28 @@ class SinRBindingPredictor:
         else:
             self.known_motifs = known_motifs
         self.shape_predictor = DNAShapePredictor()
+        self.null_distribution = None
+        self.null_params = None
+        self.null_distribution_generated = False
+
+    def generate_null_distribution(self, background_sequences, num_samples=10000):
+        """Generate null distribution of binding scores"""
+        null_scores = []
+        for _ in tqdm(range(num_samples), desc="Generating null distribution"):
+            seq = np.random.choice(background_sequences)
+            score = self.predict_binding_affinity(seq)
+            null_scores.append(score)
+        
+        self.null_distribution = np.array(null_scores)
+        self.null_params = stats.genextreme.fit(self.null_distribution)
+        self.null_distribution_generated = True
+        return self.null_distribution
+
+    def calculate_pvalue(self, score):
+        """Calculate p-value for a given binding score"""
+        if not self.null_distribution_generated:
+            return np.nan
+        return stats.genextreme.sf(score, *self.null_params)
 
     def _calculate_palindrome_score(self, sequence):
         try:
@@ -152,10 +178,14 @@ class SinRBindingPredictor:
         except Exception:
             return 0
 
-def process_sequence_chunk(chunk, known_motifs):
-    """Process a single sequence chunk - identical to standalone"""
+    def predict_binding_affinity_with_pvalue(self, sequence):
+        score = self.predict_binding_affinity(sequence)
+        pvalue = self.calculate_pvalue(score)
+        return score, pvalue
+
+def process_sequence_chunk(chunk, predictor):
+    """Process a single sequence chunk with p-value calculation"""
     try:
-        predictor = SinRBindingPredictor(known_motifs=known_motifs)
         sequence = chunk['sequence']
         window_size = 20
         step_size = 10
@@ -171,11 +201,12 @@ def process_sequence_chunk(chunk, known_motifs):
                 continue
             seen.add(key)
 
-            score = predictor.predict_binding_affinity(window)
+            score, pvalue = predictor.predict_binding_affinity_with_pvalue(window)
             results.append({
                 'position': position,
                 'sequence': window,
                 'score': score,
+                'pvalue': pvalue,
                 'contig': chunk['contig']
             })
 
@@ -183,14 +214,26 @@ def process_sequence_chunk(chunk, known_motifs):
     except Exception as e:
         print(f"Error processing chunk: {e}")
         return []
-# ==================== END OF STANDALONE SCRIPT LOGIC ====================
+# ==================== END OF UPDATED CORE LOGIC ====================
 
 def run_parallel_processing(chunks, known_motifs):
     """Parallel processing with error handling"""
     try:
+        # Generate background sequences for null distribution
+        background_seqs = []
+        for chunk in chunks:
+            seq = chunk['sequence']
+            for _ in range(10):  # Reduced number for web app performance
+                start = np.random.randint(0, len(seq) - 20)
+                background_seqs.append(seq[start:start+20])
+        
+        # Initialize predictor and generate null distribution
+        predictor = SinRBindingPredictor(known_motifs=known_motifs)
+        predictor.generate_null_distribution(background_seqs, num_samples=5000)  # Reduced samples
+        
         with multiprocessing.Pool(processes=min(4, multiprocessing.cpu_count())) as pool:
             results = []
-            for result in pool.imap_unordered(partial(process_sequence_chunk, known_motifs=known_motifs), chunks):
+            for result in pool.imap_unordered(partial(process_sequence_chunk, predictor=predictor), chunks):
                 results.extend(result)
             return results
     except Exception as e:
@@ -221,7 +264,7 @@ def index():
         protein_file.save(protein_path)
         genome_file.save(genome_path)
 
-        # Read motifs from textarea input, splitting by lines, stripping each motif
+        # Read motifs from textarea input
         known_motifs = [line.strip() for line in motifs_text.splitlines() if line.strip()]
 
         # Process protein file
@@ -238,7 +281,7 @@ def index():
         step_size = 500
         
         for record in SeqIO.parse(genome_path, "fasta"):
-            seq = str(record.seq).upper()  # Consistent uppercase conversion
+            seq = str(record.seq).upper()
             for i in range(0, len(seq) - chunk_size + 1, step_size):
                 chunks.append({
                     'contig': record.id,
@@ -246,12 +289,19 @@ def index():
                     'sequence': seq[i:i + chunk_size]
                 })
 
-        # Process chunks with identical logic
+        # Process chunks with updated logic
         results = run_parallel_processing(chunks, known_motifs)
         
-        # Process results identically to standalone
+        # Process results with p-value correction
         df = pd.DataFrame(results)
         df.drop_duplicates(subset=['position', 'sequence', 'contig'], inplace=True)
+        
+        if 'pvalue' in df.columns:
+            pvals = df['pvalue'].values
+            _, pvals_corrected, _, _ = multipletests(pvals, method='fdr_bh')
+            df['pvalue_corrected'] = pvals_corrected
+            df['significant'] = df['pvalue_corrected'] <= 0.05
+
         df = df.sort_values('score', ascending=False)
 
         # Generate output files
@@ -267,7 +317,13 @@ def index():
         plt.close()
 
         plt.figure(figsize=(15, 6))
-        sns.scatterplot(data=df, x='position', y='score')
+        if 'significant' in df.columns:
+            sns.scatterplot(data=df, x='position', y='score',
+                           hue='significant', palette={True: 'red', False: 'blue'},
+                           alpha=0.5)
+            plt.legend(title='Significant (FDR 5%)')
+        else:
+            sns.scatterplot(data=df, x='position', y='score', alpha=0.5)
         plt.title(f'{protein_name} Binding Sites Across Genome')
         position_plot_path = os.path.join(app.config['UPLOAD_FOLDER'], "genome_position.png")
         plt.savefig(position_plot_path)
@@ -366,4 +422,3 @@ if __name__ == '__main__':
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     multiprocessing.set_start_method('spawn')
     app.run(debug=True, port=5050)
-
